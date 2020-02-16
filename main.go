@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gorilla/mux"
 
@@ -332,7 +333,7 @@ func wordExistenceControlByName(wordName string) (bool, error) {
 }
 func wordDefinitionExistenceControlByName(wordName string, wordDefinition string) (bool, error) {
 	query := fmt.Sprintf(`SELECT 1 as EXISTENCE FROM "DEF"."WORDS" AS "A" INNER JOIN "DEF"."SHORT_DEFINITIONS" AS "B" ON "A"."ID" = "B"."WORD_ID" 
-	                            WHERE "A"."NAME" = '%v' AND "B"."MEANING" = '%v' limit 1`, wordName, wordDefinition)
+	                            WHERE "A"."NAME" = '%s' AND "B"."MEANING" = '%s' limit 1`, strings.Replace(wordName, "'", "''", -1), strings.Replace(wordDefinition, "'", "''", -1))
 	row, err := db.Query(query)
 	if err != nil {
 		return false, err
@@ -402,11 +403,27 @@ func responseHandler(response responseTemplate) error {
 				wordSyn.Name = newWord[0].Meta.ID
 				wordSyn.Language = "ENGLISH"
 				wordSyn.IsOffensive = item.Meta.Offensive
+				wordSyn.ShortDefinitions = newWord[0].Shortdef
 				err = insertWordToDatabase(wordSyn)
+				for _, synShortDef := range wordSyn.ShortDefinitions {
+					existence, err := wordDefinitionExistenceControlByName(wordSyn.Name, synShortDef)
+					if err != nil {
+						return err
+					}
+					if !existence {
+						err = insertShortDefinitionToDatabase(wordSyn, synShortDef)
+						if err != nil {
+							return err
+						}
+					}
+				}
 				if err != nil {
 					return err
 				}
-				insertSynonymRealtionToDatabase(word, wordSyn)
+				err = insertSynonymRealtionToDatabase(word, wordSyn)
+				if err != nil {
+					return err
+				}
 			}
 			fmt.Println(j, wordSyn)
 		}
@@ -431,16 +448,17 @@ func responseHandler(response responseTemplate) error {
 		// 	}
 		// 	fmt.Println(k, wordAnt)
 		// }
-		for p, def := range word.ShortDefinitions {
+		for _, def := range word.ShortDefinitions {
 			existence, err := wordDefinitionExistenceControlByName(word.Name, def)
 			if err != nil {
 				return err
 			}
-			var wordAnt wordTemplate
 			if !existence {
-				insertShortDefinitionToDatabase(word, def)
+				err = insertShortDefinitionToDatabase(word, def)
+				if err != nil {
+					return err
+				}
 			}
-			fmt.Println(p, wordAnt)
 		}
 		fmt.Println(i, item)
 		return err
@@ -459,18 +477,39 @@ func insertWordToDatabase(word wordTemplate) error {
 	fmt.Println("New record ID is:", ID)
 	return err
 }
-func insertSynonymRealtionToDatabase(word wordTemplate, wordSyn wordTemplate) {
+func insertSynonymRealtionToDatabase(word wordTemplate, wordSyn wordTemplate) error {
 	sqlStatement := `INSERT INTO "DEF"."SYNONYMS"( "WORD_ID", "SYNONYM_WORD_ID", "RECORD_STATUS", "LAST_UPDATE_DATE")
-						VALUES ((SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = '$1'), (SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = '$2'), B'1', CURRENT_TIMESTAMP)`
-	db.QueryRow(sqlStatement, word.UUID, wordSyn.UUID)
+						VALUES ((SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $1), (SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $2), B'1', CURRENT_TIMESTAMP)
+							RETURNING "WORD_ID"`
+	ID := 0
+	err := db.QueryRow(sqlStatement, word.UUID, wordSyn.UUID).Scan(&ID)
+	if err != nil {
+		return err
+	}
+	fmt.Println("New synonym relation was added to:", ID)
+	return err
 }
-func insertAntonymRealtionToDatabase(word wordTemplate, wordAnt wordTemplate) {
+func insertAntonymRealtionToDatabase(word wordTemplate, wordAnt wordTemplate) error {
 	sqlStatement := `INSERT INTO "DEF"."ANTONYMS"( "WORD_ID", "ANTONYM_WORD_ID", "RECORD_STATUS", "LAST_UPDATE_DATE")
-						VALUES ((SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $1), (SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $2), 1, CURRENT_TIMESTAMP)`
-	db.QueryRow(sqlStatement, word.UUID, wordAnt.UUID)
+						VALUES ((SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $1), (SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $2), B'1', CURRENT_TIMESTAMP)
+							RETURNING "WORD_ID"`
+	ID := 0
+	err := db.QueryRow(sqlStatement, word.UUID, wordAnt.UUID).Scan(&ID)
+	if err != nil {
+		return err
+	}
+	fmt.Println("New antonym relation was added to:", ID)
+	return err
 }
-func insertShortDefinitionToDatabase(word wordTemplate, wordDefinition string) {
+func insertShortDefinitionToDatabase(word wordTemplate, wordDefinition string) error {
 	sqlStatement := `INSERT INTO "DEF"."SHORT_DEFINITIONS"("WORD_ID", "MEANING", "LAST_UPDATE_DATE", "RECORD_STATUS")
-		VALUES ((SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $1), $2, CURRENT_TIMESTAMP, 1);`
-	db.QueryRow(sqlStatement, word.UUID, wordDefinition)
+						VALUES ((SELECT "ID" FROM "DEF"."WORDS" WHERE "UUID" = $1), $2, CURRENT_TIMESTAMP, B'1')
+							RETURNING "WORD_ID"`
+	ID := 0
+	err := db.QueryRow(sqlStatement, word.UUID, wordDefinition).Scan(&ID)
+	if err != nil {
+		return err
+	}
+	fmt.Println("New short defifinition was added to:", ID)
+	return err
 }
